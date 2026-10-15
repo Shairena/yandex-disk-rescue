@@ -45,6 +45,12 @@ def cloud_path(value):
     return 'disk:/' + '/'.join(parts)
 
 
+def cloud_parent(path):
+    if path == 'disk:/':
+        return None
+    return path.rsplit('/', 1)[0] if path.count('/') > 1 else 'disk:/'
+
+
 def component(name):
     # Reversible escaping; percent itself is escaped. Reserved names/long names get a suffix.
     safe = ''.join(f'%{ord(c):04X}' if ord(c) < 32 or c in '<>:"/\\|?*%' else c for c in name)
@@ -118,12 +124,34 @@ CREATE TABLE IF NOT EXISTS history(id INTEGER PRIMARY KEY, recorded TEXT, path T
 CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, path TEXT, started TEXT, finished TEXT,
  status TEXT, reason TEXT, http INTEGER, partial_path TEXT, partial_bytes INTEGER);
 ''')
+            db.execute('BEGIN IMMEDIATE')
+            # Additive upgrade: legacy inventory is historical until rediscovered.
+            for table in ('entries', 'folders'):
+                columns = {r[1] for r in db.execute('PRAGMA table_info(' + table + ')')}
+                if 'presence' not in columns:
+                    db.execute("ALTER TABLE " + table + " ADD COLUMN presence TEXT NOT NULL DEFAULT 'unverified'")
+            if 'parent' not in {r[1] for r in db.execute('PRAGMA table_info(entries)')}:
+                db.execute('ALTER TABLE entries ADD COLUMN parent TEXT')
+            for row in db.execute("SELECT path FROM entries WHERE parent IS NULL AND path!='disk:/'").fetchall():
+                db.execute('UPDATE entries SET parent=? WHERE path=?', (cloud_parent(row[0]), row[0]))
+            db.execute('CREATE INDEX IF NOT EXISTS entries_parent ON entries(parent)')
 
     @contextmanager
     def db(self):
         db = sqlite3.connect(self.file, timeout=15)
         db.row_factory = sqlite3.Row
-        db.execute('PRAGMA journal_mode=WAL')
+        # First-time WAL transition can fail immediately for concurrent openers,
+        # even with SQLite's ordinary busy timeout. Retry only lock errors.
+        deadline = time.monotonic() + 15
+        while True:
+            try:
+                db.execute('PRAGMA journal_mode=WAL')
+                break
+            except sqlite3.OperationalError as exc:
+                if getattr(exc, 'sqlite_errorcode', None) not in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or time.monotonic() >= deadline:
+                    db.close()
+                    raise
+                time.sleep(.05)
         db.execute('PRAGMA synchronous=FULL')
         try:
             with db:
@@ -169,22 +197,28 @@ CREATE TABLE IF NOT EXISTS attempts(id INTEGER PRIMARY KEY, path TEXT, started T
             collision = db.execute('SELECT path FROM entries WHERE relative=? COLLATE NOCASE', (relative,)).fetchone()
             if collision and collision[0] != path or relative.split(os.sep)[0].casefold() == '.yandexbackupparts':
                 relative += '~' + hashlib.sha256(path.encode()).hexdigest()[:16]
-        changed = old and any(old[k] != metadata.get(k) for k in ('size', 'sha256', 'md5', 'modified', 'resource_id'))
-        status = ('directory' if kind == 'dir' else 'pending') if not old or changed else old['status']
-        if changed:
+        changed = old and (old['kind'] != kind or any(old[k] != metadata.get(k) for k in ('size', 'sha256', 'md5', 'modified', 'resource_id')))
+        revived = old and old['presence'] == 'not_current' and old['status'] != 'downloaded'
+        status = ('directory' if kind == 'dir' else 'pending') if not old or changed or revived else old['status']
+        if changed or revived:
             db.execute('INSERT INTO history(recorded,path,event,detail) VALUES (?,?,?,?)', (now(), path, 'cloud_metadata_changed', json.dumps(dict(old), ensure_ascii=False)))
         db.execute('''INSERT INTO entries(path,resource_id,kind,size,sha256,md5,modified,relative,status,first_seen,last_seen)
 VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=excluded.resource_id,
  kind=excluded.kind,size=excluded.size,sha256=excluded.sha256,md5=excluded.md5,modified=excluded.modified,
  status=excluded.status,last_seen=excluded.last_seen''',
                    (path, fields['resource_id'], kind, fields['size'], fields['sha256'], fields['md5'], fields['modified'], relative, status, now(), now()))
-        if changed:
+        if changed or revived:
             # A new cloud version gets a fresh retry cycle, not a new history.
             # Existing payloads/partials remain on disk; their prior paths are in history.
             db.execute('''UPDATE entries SET cycle_attempts=0,next_attempt=0,reason=NULL,http=NULL,
  local_path=NULL,local_sha256=NULL,verification=NULL,partial_path=NULL WHERE path=?''', (path,))
+        db.execute("UPDATE entries SET presence='observed',parent=? WHERE path=?", (cloud_parent(path), path))
         if kind == 'dir':
             db.execute('INSERT OR IGNORE INTO folders(path,updated) VALUES (?,?)', (path, now()))
+            db.execute("UPDATE folders SET status=CASE WHEN presence!='observed' THEN 'pending' ELSE status END,offset=CASE WHEN presence!='observed' THEN 0 ELSE offset END,total=CASE WHEN presence!='observed' THEN NULL ELSE total END,presence='observed' WHERE path=?", (path,))
+        elif old and old['kind'] == 'dir':
+            self.mark_not_current(db, path, include_self=False)
+            db.execute("UPDATE folders SET status='complete',presence='observed',error=NULL,http=NULL WHERE path=?", (path,))
         return path
 
     def seed(self, roots):
@@ -192,16 +226,32 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=exclu
             path = cloud_path(value)
             with self.db() as db:
                 db.execute('INSERT OR IGNORE INTO folders(path,updated) VALUES (?,?)', (path, now()))
+                db.execute("UPDATE folders SET status=CASE WHEN presence!='observed' THEN 'pending' ELSE status END,offset=CASE WHEN presence!='observed' THEN 0 ELSE offset END,total=CASE WHEN presence!='observed' THEN NULL ELSE total END,presence='observed' WHERE path=?", (path,))
+
+    def mark_not_current(self, db, path, include_self=True):
+        scope, args = scope_filter([path])
+        if not include_self:
+            scope += ' AND path!=?'
+            args.append(path)
+        for table in ('entries', 'folders'):
+            db.execute("UPDATE " + table + " SET presence='not_current' WHERE " + scope, args)
+        db.execute('INSERT INTO history(recorded,path,event,detail) VALUES (?,?,?,?)',
+                   (now(), path, 'membership_not_current', 'absent from completed parent listing; not proof of deletion' if include_self else 'parent is now a file'))
+
+    def reconcile_children(self, db, parent):
+        absent = db.execute('SELECT path FROM entries WHERE parent=? AND path NOT IN (SELECT path FROM folder_items WHERE folder=?)', (parent, parent)).fetchall()
+        for row in absent:
+            self.mark_not_current(db, row['path'])
 
     def rows(self, view='all', limit=None):
-        where = {'all': '1', 'pending': "kind='file' AND status!='downloaded'", 'downloaded': "status='downloaded'", 'failed': "kind='file' AND status NOT IN ('downloaded','pending','retry')"}[view]
+        where = {'all': '1', 'pending': "kind='file' AND presence='observed' AND status!='downloaded'", 'downloaded': "status='downloaded'", 'failed': "kind='file' AND presence!='not_current' AND status NOT IN ('downloaded','pending','retry')"}[view]
         with self.db() as db:
             sql = 'SELECT * FROM entries WHERE ' + where + ' ORDER BY path'
             return [dict(r) for r in db.execute(sql + (' LIMIT ?' if limit is not None else ''), (limit,) if limit is not None else ())]
 
     def summary(self):
         with self.db() as db:
-            row = db.execute("SELECT count(*),coalesce(sum(size),0),coalesce(sum(status='downloaded'),0),coalesce(sum(CASE WHEN status='downloaded' THEN size ELSE 0 END),0) FROM entries WHERE kind='file'").fetchone()
+            row = db.execute("SELECT count(*),coalesce(sum(size),0),coalesce(sum(status='downloaded'),0),coalesce(sum(CASE WHEN status='downloaded' THEN size ELSE 0 END),0) FROM entries WHERE kind='file' AND presence='observed'").fetchone()
             return tuple(row)
 
     def folders(self):
@@ -211,16 +261,23 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=exclu
     def retry(self, roots=None):
         scope, args = scope_filter(roots)
         with self.db() as db:
-            db.execute("UPDATE entries SET status='pending',cycle_attempts=0,next_attempt=0 WHERE kind='file' AND status NOT IN ('downloaded','excluded_security') AND " + scope, args)
-            db.execute("UPDATE folders SET status='pending',attempts=0,error=NULL WHERE status='error' AND " + scope, args)
+            db.execute("UPDATE entries SET status='pending',cycle_attempts=0,next_attempt=0 WHERE kind='file' AND presence='observed' AND status NOT IN ('downloaded','excluded_security') AND " + scope, args)
+            db.execute("UPDATE folders SET status='pending',attempts=0,error=NULL WHERE presence='observed' AND status='error' AND " + scope, args)
             db.execute("INSERT INTO history(recorded,event) VALUES (?, 'explicit_retry_cycle')", (now(),))
 
     def rescan(self, roots=None):
+        if roots is None:
+            roots = (self.setting('roots') or 'disk:/').splitlines()
         scope, args = scope_filter(roots)
         with self.db() as db:
-            db.execute("UPDATE folders SET offset=0,total=NULL,status='pending',attempts=0,error=NULL WHERE " + scope, args)
+            for row in db.execute('SELECT * FROM folders WHERE ' + scope, args).fetchall():
+                db.execute('INSERT INTO history(recorded,path,event,detail) VALUES (?,?,?,?)', (now(), row['path'], 'folder_before_refresh', json.dumps(dict(row))))
+            for table in ('entries','folders'):
+                db.execute("UPDATE " + table + " SET presence=CASE WHEN presence='not_current' THEN presence ELSE 'unverified' END WHERE " + scope, args)
+            db.execute("UPDATE folders SET offset=0,total=NULL,status='awaiting_parent',attempts=0,error=NULL,http=NULL WHERE " + scope, args)
             db.execute('DELETE FROM folder_items WHERE folder IN (SELECT path FROM folders WHERE ' + scope + ')', args)
             db.execute("INSERT INTO history(recorded,event) VALUES (?, 'explicit_rescan_no_deletions')", (now(),))
+        self.seed(roots)
 
     def export(self, directory, roots=None):
         scope, args = scope_filter(roots)
@@ -233,7 +290,9 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=exclu
                 'downloaded.csv': ("SELECT * FROM entries WHERE status='downloaded' AND " + scope + ' ORDER BY path', args),
                 # All unresolved, including never attempted: no silent disappearance.
                 'unresolved.csv': ("SELECT * FROM entries WHERE kind='file' AND status!='downloaded' AND " + scope + ' ORDER BY path', args),
-                'inventory_errors.csv': ("SELECT * FROM folders WHERE status!='complete' AND " + scope + ' ORDER BY path', args),
+                'inventory_errors.csv': ("SELECT * FROM folders WHERE presence!='not_current' AND (status!='complete' OR presence='unverified') AND " + scope + ' ORDER BY path', args),
+                'not_current.csv': ("SELECT * FROM entries WHERE presence='not_current' AND " + scope + ' ORDER BY path', args),
+                'unverified.csv': ("SELECT * FROM entries WHERE presence='unverified' AND " + scope + ' ORDER BY path', args),
                 'attempt_history.csv': ('SELECT * FROM attempts WHERE ' + scope + ' ORDER BY id', args),
                 'run_status.csv': ("SELECT key,value FROM settings WHERE key IN ('roots','last_run_status','last_run_error')", ()),
             }
@@ -329,7 +388,9 @@ class Engine:
             if not scan_only:
                 self.prepare_local()
                 self.download_all()
-            self.store.setting('last_run_status', 'finished_with_unresolved_items' if self.store.rows('pending') or any(f['status'] != 'complete' for f in self.store.folders()) else 'finished')
+            unresolved = any(self.selected(r['path']) for r in self.store.rows('pending'))
+            incomplete = any(self.selected(f['path']) and f['presence'] != 'not_current' and (f['status'] != 'complete' or f['presence'] == 'unverified') for f in self.store.folders())
+            self.store.setting('last_run_status', 'finished_with_unresolved_items' if unresolved or incomplete else 'finished')
             self.notify('Операция завершена. Проверьте незавершённые папки и файлы.')
         except Interrupted:
             self.store.setting('last_run_status', 'interrupted')
@@ -350,7 +411,7 @@ class Engine:
         while True:
             self.check()
             with self.store.db() as db:
-                folder = next((r for r in db.execute("SELECT * FROM folders WHERE status='pending' ORDER BY path") if self.selected(r['path'])), None)
+                folder = next((r for r in db.execute("SELECT * FROM folders WHERE presence='observed' AND status='pending' ORDER BY path") if self.selected(r['path'])), None)
             if not folder:
                 return
             path, offset = folder['path'], folder['offset']
@@ -362,7 +423,7 @@ class Engine:
                 if result.get('type') == 'file':
                     with self.store.db() as db:
                         self.store.observe(db, result)
-                        db.execute("UPDATE folders SET status='complete',updated=? WHERE path=?", (now(), path))
+                        db.execute("UPDATE folders SET status='complete',presence='observed',updated=? WHERE path=?", (now(), path))
                     continue
                 embedded = result.get('_embedded')
                 if not isinstance(embedded, dict):
@@ -392,6 +453,8 @@ class Engine:
                     end = offset + len(items)
                     db.execute('UPDATE folders SET offset=?,total=?,status=?,attempts=0,updated=? WHERE path=?',
                                (end, total, 'complete' if end == total else 'pending', now(), path))
+                    if end == total:
+                        self.store.reconcile_children(db, path)
                 self.wait(self.interval)
             except (Failure, ValueError, KeyError, TypeError) as exc:
                 error = exc if isinstance(exc, Failure) else Failure('invalid_inventory_response')
@@ -423,7 +486,7 @@ class Engine:
                     self.local_index.setdefault((name.casefold(), info.st_size), []).append(candidate)
         for row in self.store.rows():
             self.check()
-            if not self.selected(row['path']):
+            if not self.selected(row['path']) or row['presence'] != 'observed':
                 continue
             if row['kind'] == 'dir':
                 try:
@@ -447,7 +510,7 @@ class Engine:
         while True:
             self.check()
             with self.store.db() as db:
-                row = next((r for r in db.execute("SELECT * FROM entries WHERE kind='file' AND status IN ('pending','retry') ORDER BY next_attempt,path") if self.selected(r['path'])), None)
+                row = next((r for r in db.execute("SELECT * FROM entries WHERE kind='file' AND presence='observed' AND status IN ('pending','retry') ORDER BY next_attempt,path") if self.selected(r['path'])), None)
             if not row:
                 return
             self.wait(max(0, row['next_attempt'] - time.time()))

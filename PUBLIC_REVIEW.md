@@ -1,54 +1,42 @@
-# Pre-release verification: 0.2.0
+# Pre-release verification: 0.2.1
 
-Local MCP follow-up: independent dedicated control suite **14 passed, 1
-skipped**; full offline app suite **28 passed, 0 failed, 2 skipped**. Both skips
-require unavailable Windows symlink privileges. Actual subprocess protocol,
-initialization/version negotiation, 11-tool discovery, closed/disabled GUI
-denial, scoped inventory/reset/exports, idempotency/concurrent producers,
-revocation/restart/heartbeat, error non-disclosure and pause checkpoint passed.
-Single-worker command behavior was checked using a synthetic handler.
+2026-10-15. Independent offline app suite: **38 run, 36 passed, 0 failures,
+0 errors, 2 skipped**. Skips require unavailable Windows symlink privileges;
+reparse-point rejection is not runtime-confirmed on this test host.
 
-Rebuilt 0.2.0 console MCP passed isolated initialize/tools/list/get_status
-(GUI closed, app_not_running), exit 0/empty stderr. Rebuilt GUI --ui-smoke
-passed. No real GUI consent/worker/account or live MCP download was exercised.
-The prior one-file authenticated result below applies to 0.1.0, not a new live
-acceptance claim for 0.2.0. MCP is not automatically installed into any client.
+The new membership refresh module passed **10/10** synthetic tests. It covers
+complete multipage absence, incomplete/failed/changed/duplicate pages, resumed
+offsets, legacy and partially upgraded schemas, concurrent openers, reappearance,
+retry cycles, verified local-copy retention, exact-root 404, sibling scoping,
+MCP/reporting and directory-to-file conversion without other metadata changes.
 
-## Prior engine and live validation
+Review found a concurrent WAL setup error and a type-only metadata change edge;
+both were corrected and rechecked. An initial full run had two failures from
+old exact six-CSV expectations. The new contract explicitly adds two reports;
+only those two expected filename sets were updated to exactly eight, keeping
+the content/privacy assertions. The final full run above passed; initial
+negative observations remain in the private review record.
 
-2026-10-15. Independent synthetic review: **14 passed, 0 failed, 1 skipped**.
-The skipped Windows reparse-point test required unavailable symlink privileges;
-that runtime path remains unverified on this test host.
+Clean-built GUI smoke returned normally on empty synthetic state. Console MCP
+accepted initialize(2025-06-18), reported version 0.2.1 and app_not_running for
+the closed-GUI status check, exit 0. No real queue, token or network was used.
+Packaging rejects stale binaries by comparing six embedded application modules
+with compiled final source. Both final archives passed that owner check.
 
-Verified offline scope: recursive pages and empty directories, incomplete scan
-evidence, partial download interruption/restart, cloud hash verification,
-existing-copy adoption/no-overwrite conflicts, lock contention, account and
-destination binding, read-only API/host restrictions, auth/429 mapping,
-retry history, CSV completeness/formula escaping, case collisions and synthetic
-Windows DPAPI roundtrip.
+Historical inventory, observations, attempts, local files and partials remain
+preserved. not_current means absence from a completed parent listing, not proof
+of deletion. Unknown/unavailable/incomplete branches cannot be called deleted
+or a complete backup. Existing queues require the quiescent cutover and backup
+procedure in REFRESH.md; no production migration was performed by this review.
 
-An independent probe found that changed cloud versions inherited exhausted
-retry budgets. The fix resets only the new version's current retry/evidence
-fields, retaining lifetime attempts/history and existing files. Independent
-recheck passed; unchanged metadata preserves its current budget.
+## Prior live validation
 
-The freshly packaged Windows EXE passed `--ui-smoke --state` in a new isolated
-directory: exit 0, only an empty queue database created, no network/cloud access.
-This is startup verification, not visual/DPI acceptance.
+The public 0.1.0 EXE downloaded one real file (4,042,624 bytes) through
+authenticated REST. Independent saved-evidence review confirmed cloud SHA256,
+MD5 and recorded local SHA256 agreement with one completed attempt. Human
+credentials were entered locally and never read by reviewers.
 
-**Live follow-up:** the public 0.1.0 EXE successfully downloaded one real file
-(4,042,624 bytes) through authenticated REST. Independent local evidence review
-confirmed cloud SHA256, MD5 and recorded local SHA256 agreement, one completed
-attempt and no error. Credentials were entered by the human and never read by
-the reviewers. No private filename, account ID or payload is published.
-
-**Not validated:** live full-tree pagination/backup, HTTP 410 resolution across
-accounts/files, any complete real Disk backup, or media playability. Users obtain
-their own read-only OAuth credentials through Yandex and enter them locally.
-An error, exhausted retries, or partial inventory must not be treated as proof
-of permanent file loss or backup completeness.
-
-The release is an explicitly experimental prerelease. No credentials, personal
-files, recovery inventories, private project history, or live-account logs are
-included. The original application/tests are MIT; bundled runtime licenses
-remain separate and are included in the portable archive.
+This is not live acceptance of a complete Disk, all files/accounts, full-tree
+pagination, HTTP 410 recovery, media decoding, or the new 0.2.1 refresh migration.
+The release remains experimental. Source/tests are MIT; bundled runtime
+licenses are separate. No private recovery data or credentials are distributed.

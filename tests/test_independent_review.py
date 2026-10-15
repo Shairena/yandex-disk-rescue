@@ -89,7 +89,8 @@ class ReviewTests(unittest.TestCase):
         exported = store.export(self.root / 'exports')
         self.assertEqual(sorted(p.name for p in exported.iterdir()), sorted([
             'inventory.csv', 'downloaded.csv', 'unresolved.csv',
-            'inventory_errors.csv', 'attempt_history.csv', 'run_status.csv',
+            'inventory_errors.csv', 'not_current.csv', 'unverified.csv',
+            'attempt_history.csv', 'run_status.csv',
         ]))
         self.assertIn('good.txt', (exported / 'downloaded.csv').read_text(encoding='utf-8-sig'))
         self.assertNotIn('good.txt', (exported / 'unresolved.csv').read_text(encoding='utf-8-sig'))

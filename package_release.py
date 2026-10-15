@@ -3,12 +3,26 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
+import marshal
 from pathlib import Path
 import shutil
 import sys
 import zipfile
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
+
+
+def verify_bundled_source(app, target):
+    from PyInstaller.archive.readers import CArchiveReader
+    names = ('engine', 'agent_control', 'mcp_server', 'vault', 'api', 'main')
+    for filename in ('YandexDiskRescue.exe', 'YandexDiskRescueMCP.exe'):
+        archive = CArchiveReader(str(target / filename))
+        modules = archive.open_embedded_archive('PYZ.pyz')
+        for name in names:
+            actual = marshal.loads(archive.extract('main')) if name == 'main' else modules.extract(name)
+            expected = compile((app / (name + '.py')).read_text(encoding='utf-8'), name + '.py', 'exec', dont_inherit=True, optimize=0)
+            if actual != expected:
+                raise RuntimeError('Stale or mismatched bundled source: ' + filename + ':' + name)
 
 
 def main():
@@ -17,6 +31,7 @@ def main():
     args = parser.parse_args()
     app = Path(__file__).parent
     target = args.dist
+    verify_bundled_source(app, target)
     licenses = target / 'licenses'
     licenses.mkdir(parents=True, exist_ok=True)
     base = Path(sys.base_prefix)
@@ -30,7 +45,7 @@ def main():
         if not path.is_file():
             raise RuntimeError('Required redistribution notice missing: ' + name)
         shutil.copyfile(path, licenses / name)
-    members = ['YandexDiskRescue.exe', 'YandexDiskRescueMCP.exe', 'README.md', 'LICENSE', 'THIRD_PARTY.md', 'PUBLIC_REVIEW.md', 'MCP.md', 'LIVE_VALIDATION.md']
+    members = ['YandexDiskRescue.exe', 'YandexDiskRescueMCP.exe', 'README.md', 'LICENSE', 'THIRD_PARTY.md', 'PUBLIC_REVIEW.md', 'MCP.md', 'LIVE_VALIDATION.md', 'REFRESH.md']
     for name in members[2:]:
         shutil.copyfile(app / name, target / name)
     exe = target / members[0]

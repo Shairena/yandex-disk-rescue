@@ -71,6 +71,12 @@ working are unverified for your account; this app does not promise a workaround.
 
 ## Use
 
+**Refreshing after cloud changes:** read [REFRESH.md](REFRESH.md) before upgrading
+an existing recovery queue. Version 0.2.1 fixes old deleted/moved folders being
+scheduled again from historical inventory. Rows/local copies are preserved;
+presence distinguishes observed, unverified and not_current. A failed request
+does not establish deletion. Use a coordinated metadata-only refresh first.
+
 - Choose the destination (initial default `I:\YandexBackup\Disk`). Select the
   whole Disk or enter cloud roots, one per line, e.g. `disk:/Photos`.
   Full paths from `disk:/` are retained when selecting a nested root.
@@ -114,6 +120,8 @@ paths/cloud filenames and should be treated as private recovery data.
 | `downloaded.csv` | Verified completed/reconciled files, actual path/SHA256 and verification basis |
 | `unresolved.csv` | **Every** unresolved file, including never attempted, retries, auth/HTTP/rate/transport/integrity/conflicts/security exclusions |
 | `inventory_errors.csv` | Every known folder not fully enumerated, offset/total/error/attempt count |
+| `not_current.csv` | Historical entries absent from a completed parent listing; not a deletion verdict |
+| `unverified.csv` | Historical entries awaiting rediscovery, not scheduled independently |
 | `attempt_history.csv` | Recorded attempts with time, reason/HTTP, retained partial path/bytes |
 | `run_status.csv` | Requested roots and latest run/error, including failures before enumeration |
 
@@ -138,6 +146,9 @@ python -m venv .buildenv
 PyInstaller is a build-only dependency; its bootloader exception permits
 distribution of the bundled app under MIT. Bundled Python/Tcl/Tk retain their
 own licenses; MIT applies to this project's original source code.
+Both builds clear PyInstaller caches. Packaging additionally compares the six
+bundled application code objects against the final source before making a ZIP;
+a stale/mismatched executable is rejected.
 
 ## Sources checked 2026-10-15
 

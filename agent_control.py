@@ -86,8 +86,9 @@ CREATE TABLE IF NOT EXISTS agent_commands(request_id TEXT PRIMARY KEY, session T
             profile = json.loads(row['profile'])
         scope, args = scope_filter(profile['roots'])
         with self.store.db() as db:
-            count, size, done, done_size = db.execute("SELECT count(*),coalesce(sum(size),0),coalesce(sum(status='downloaded'),0),coalesce(sum(CASE WHEN status='downloaded' THEN size ELSE 0 END),0) FROM entries WHERE kind='file' AND " + scope, args).fetchone()
-            incomplete = db.execute("SELECT count(*) FROM folders WHERE status!='complete' AND " + scope, args).fetchone()[0]
+            count, size, done, done_size = db.execute("SELECT count(*),coalesce(sum(size),0),coalesce(sum(status='downloaded'),0),coalesce(sum(CASE WHEN status='downloaded' THEN size ELSE 0 END),0) FROM entries WHERE kind='file' AND presence='observed' AND " + scope, args).fetchone()
+            incomplete = db.execute("SELECT count(*) FROM folders WHERE presence!='not_current' AND (status!='complete' OR presence='unverified') AND " + scope, args).fetchone()[0]
+            membership = {r[0]: r[1] for r in db.execute('SELECT presence,count(*) FROM entries WHERE ' + scope + ' GROUP BY presence', args)}
         last_run = {'status': 'not_run_for_approved_profile'}
         if (self.store.setting('roots') or '').splitlines() == profile['roots']:
             status = self.store.setting('last_run_status')
@@ -101,6 +102,7 @@ CREATE TABLE IF NOT EXISTS agent_commands(request_id TEXT PRIMARY KEY, session T
                 'queue_files': count, 'downloaded_files': done, 'queue_bytes': size,
                 'downloaded_bytes': done_size, 'incomplete_folders': incomplete,
                 'last_run': last_run,
+                'membership_counts': membership,
                 'coverage': 'known_inventory_only_not_atomic_cloud_snapshot'}
 
     def submit(self, command, request_id):
@@ -165,15 +167,15 @@ CREATE TABLE IF NOT EXISTS agent_commands(request_id TEXT PRIMARY KEY, session T
     def inventory(self, view, offset, limit):
         if view not in {'all', 'pending', 'downloaded', 'failed', 'folders'} or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 200:
             raise ControlError('invalid_page')
-        filters = {'all': '1', 'pending': "kind='file' AND status!='downloaded'", 'downloaded': "status='downloaded'",
-                   'failed': "kind='file' AND status NOT IN ('pending','retry','downloaded')"}
+        filters = {'all': '1', 'pending': "kind='file' AND presence='observed' AND status!='downloaded'", 'downloaded': "status='downloaded'",
+                   'failed': "kind='file' AND presence!='not_current' AND status NOT IN ('pending','retry','downloaded')"}
         with self.store.db() as db:
             session = self._session(db)
             scope, params = scope_filter(json.loads(session['profile'])['roots'])
             if view == 'folders':
-                table, fields, where = 'folders', 'path,offset,total,status,error,http,attempts,updated', '1'
+                table, fields, where = 'folders', 'path,offset,total,status,error,http,attempts,updated,presence', '1'
             else:
-                table, fields, where = 'entries', 'path,resource_id,kind,size,status,reason,http,attempts,last_attempt,verification,local_path', filters[view]
+                table, fields, where = 'entries', 'path,resource_id,kind,size,status,reason,http,attempts,last_attempt,verification,local_path,presence', filters[view]
             where = '(' + where + ') AND ' + scope
             total = db.execute('SELECT count(*) FROM ' + table + ' WHERE ' + where, params).fetchone()[0]
             rows = db.execute('SELECT ' + fields + ' FROM ' + table + ' WHERE ' + where + ' ORDER BY path LIMIT ? OFFSET ?', (*params, limit, offset)).fetchall()

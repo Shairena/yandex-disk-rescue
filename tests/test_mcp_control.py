@@ -277,7 +277,8 @@ class MCPControlTests(unittest.TestCase):
         directory = Path(command['result']['directory'])
         self.assertTrue(directory.is_relative_to(store.directory / 'agent-exports'))
         self.assertEqual(sorted(path.name for path in directory.iterdir()), [
-            'attempt_history.csv', 'downloaded.csv', 'inventory.csv', 'inventory_errors.csv', 'run_status.csv', 'unresolved.csv',
+            'attempt_history.csv', 'downloaded.csv', 'inventory.csv', 'inventory_errors.csv',
+            'not_current.csv', 'run_status.csv', 'unresolved.csv', 'unverified.csv',
         ])
         self.assertIn('allowed', (directory / 'inventory.csv').read_text(encoding='utf-8-sig'))
         self.assertNotIn('outside', (directory / 'inventory.csv').read_text(encoding='utf-8-sig'))

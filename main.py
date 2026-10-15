@@ -266,7 +266,7 @@ class App(tk.Tk):
         if directory:
             try:
                 exported = self.store.export(directory)
-                messagebox.showinfo('Экспорт', 'Все шесть таблиц сохранены в новом каталоге:\n' + str(exported))
+                messagebox.showinfo('Экспорт', 'Все таблицы, включая неактуальные и непроверенные записи, сохранены в новом каталоге:\n' + str(exported))
             except Exception:
                 messagebox.showerror('Экспорт', 'Не удалось записать таблицы. Проверьте права и свободное место.')
 
@@ -275,7 +275,8 @@ class App(tk.Tk):
         rows = self.store.rows(view[self.view.get()], limit=500) if self.view.get() in view else self.store.folders()
         self.table.delete(*self.table.get_children())
         for row in rows[:500]:
-            self.table.insert('', 'end', values=(row['path'], row['status'], row.get('size', ''), row.get('reason') or row.get('error') or ''))
+            label = row['status'] if row['presence'] == 'observed' else row['presence'] + ' / ' + row['status']
+            self.table.insert('', 'end', values=(row['path'], label, row.get('size', ''), row.get('reason') or row.get('error') or ''))
 
     def tick(self):
         try:
@@ -303,8 +304,11 @@ class App(tk.Tk):
         try:
             count, total_bytes, done, done_bytes = self.store.summary()
             self.stats.set(f'Проверено файлов: {done} / {count}    Байт: {done_bytes:,} / {total_bytes:,}    Не решено: {count - done}')
-            folders = self.store.folders(); incomplete = sum(f['status'] != 'complete' for f in folders)
-            self.summary.set(f'Не завершено папок: {incomplete} / {len(folders)}. ' + ('Полнота описи НЕ подтверждена.' if incomplete or not folders else 'Все известные папки перечислены; облако могло измениться во время обхода.'))
+            folders = self.store.folders()
+            historical = sum(f['presence'] == 'not_current' for f in folders)
+            unknown = sum(f['presence'] == 'unverified' for f in folders)
+            incomplete = sum(f['presence'] != 'not_current' and (f['status'] != 'complete' or f['presence'] == 'unverified') for f in folders)
+            self.summary.set(f'Не завершено папок: {incomplete}. Не проверены: {unknown}; неактуальны: {historical}. ' + ('Полнота описи НЕ подтверждена.' if incomplete or not folders else 'Известный обход завершён; история и локальные копии сохранены.'))
             self.progress.configure(maximum=max(total_bytes, 1), value=done_bytes)
             if updated or self.dirty:
                 self.refresh_table(); self.dirty = False

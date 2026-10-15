@@ -1,4 +1,11 @@
-# Local MCP agent controls (0.2.0)
+# Local MCP agent controls (0.2.1)
+
+Refresh correction: [REFRESH.md](REFRESH.md) explains current versus historical
+membership, additive schema migration and exclusive cutover. `rescan` now gates
+old descendants until their parents rediscover them. Counts/pending are current
+observations; `all`/`downloaded` retain history with a `presence` field. Unknown
+branches stay incomplete, and absence is established only by a complete parent
+listing. Do not run old binaries on an upgraded active queue.
 
 The stdio server is an adapter to the **already open GUI**, not a second
 downloader. It writes session-bound commands into the selected queue's SQLite
