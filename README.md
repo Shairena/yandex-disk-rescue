@@ -27,6 +27,21 @@ executable. Put it on a private local disk, not a synced/shared directory.
 One state directory binds permanently to one account and destination; use a
 different `--state` directory to change either. Only one worker may use a queue.
 
+## Agent control (0.2.0)
+
+The release also includes `YandexDiskRescueMCP.exe`: a local stdio MCP adapter
+to the open GUI's existing worker. [MCP.md](MCP.md) provides the exact client
+configuration, tool contract and setup. Enter credentials in the GUI and enable
+agent control for the approved destination/roots/options; agents never receive
+the token or a tool to change that scope. Restart resets this permission to off.
+The GUI includes an explicit **Вставить** token button; Shift+Insert also works.
+
+MCP can read scoped queue/progress, request start/scan/pause/resume/stop,
+reset retries/rescan, and export reports. Commands are durable and idempotent;
+acknowledgement is not backup completion. The server creates no second worker
+and exposes no HTTP listener. This package does not auto-install global client
+configuration or replace an existing running app.
+
 ## Authentication
 
 The app uses the official **read-only REST API**, not browser scraping. A
@@ -116,6 +131,8 @@ python main.py --ui-smoke --state '.\review_artifacts\ui-state'
 python -m venv .buildenv
 .\.buildenv\Scripts\python -m pip install pyinstaller==6.22.3
 .\.buildenv\Scripts\python -m PyInstaller --noconfirm --onefile --windowed --name YandexDiskRescue main.py
+.\.buildenv\Scripts\python -m PyInstaller --noconfirm --onefile --console --name YandexDiskRescueMCP main.py
+.\.buildenv\Scripts\python package_release.py
 ```
 
 PyInstaller is a build-only dependency; its bootloader exception permits

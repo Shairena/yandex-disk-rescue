@@ -8,19 +8,24 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import webbrowser
 from api import DiskAPI
-from engine import Store, Engine
+from engine import Store, Engine, safe_local
+from agent_control import Channel, ControlError, validate_profile
 import vault
 
 APP_ROOT = Path(sys.executable).parent if getattr(sys, 'frozen', False) else Path(__file__).resolve().parent
 
 
 class App(tk.Tk):
-    def __init__(self, state):
+    def __init__(self, state, channel=None):
         super().__init__()
         self.title('Яндекс Диск — резервная копия')
         self.geometry('1040x740')
         self.minsize(840, 620)
         self.store = Store(state)
+        self.channel = channel or Channel(self.store)
+        self.agent_session = self.channel.open_session()
+        self.agent_enabled = tk.BooleanVar(value=False)
+        self.closing = False
         self.worker = self.engine = None
         self.messages = queue.Queue(maxsize=30)
         self.dest = tk.StringVar(value=self.store.setting('destination') or r'I:\YandexBackup\Disk')
@@ -45,6 +50,8 @@ class App(tk.Tk):
         authrow = ttk.Frame(outer); authrow.pack(fill='x', pady=8)
         ttk.Label(authrow, text='OAuth-токен:').pack(side='left')
         self.token_entry = ttk.Entry(authrow, textvariable=self.token, show='•'); self.token_entry.pack(side='left', fill='x', expand=True, padx=8)
+        self.paste_button = ttk.Button(authrow, text='Вставить', command=self.paste_token)
+        self.paste_button.pack(side='left', padx=(0, 8))
         ttk.Checkbutton(authrow, text='Сохранить через Windows', variable=self.remember).pack(side='left')
         ttk.Button(authrow, text='Как получить', command=self.auth_help).pack(side='left', padx=(8, 0))
         ttk.Button(authrow, text='Забыть', command=self.forget).pack(side='left', padx=(8, 0))
@@ -62,10 +69,16 @@ class App(tk.Tk):
         ttk.Button(presets, text='Весь Диск', command=lambda: self.set_roots('disk:/')).pack(side='left')
         ttk.Button(presets, text='Фото, загрузки, фотокамера', command=lambda: self.set_roots('disk:/Старые фото и видео\ndisk:/Загрузки\ndisk:/Фотокамера')).pack(side='left', padx=6)
         ttk.Label(presets, text='Можно указать любую папку или файл.').pack(side='left')
+        self.agent_check = ttk.Checkbutton(outer, text='Разрешить агенту MCP управление этим профилем (папка, пути и параметры фиксируются)',
+                                          variable=self.agent_enabled, command=self.toggle_agent)
+        self.agent_check.pack(anchor='w', pady=(6, 0))
         opts = ttk.Frame(outer); opts.pack(fill='x', pady=8)
+        self.option_entries = []
         for label, var, width in [('Интервал, с:', self.interval, 6), ('Попыток за цикл:', self.retries, 4), ('База ожидания, с:', self.backoff, 6)]:
             ttk.Label(opts, text=label).pack(side='left', padx=(0, 5))
-            ttk.Entry(opts, textvariable=var, width=width).pack(side='left', padx=(0, 14))
+            entry = ttk.Entry(opts, textvariable=var, width=width)
+            entry.pack(side='left', padx=(0, 14))
+            self.option_entries.append(entry)
         ttk.Label(opts, text='Один файл одновременно').pack(side='right')
         controls = ttk.Frame(outer); controls.pack(fill='x')
         self.start_button = ttk.Button(controls, text='Начать / продолжить', command=self.start); self.start_button.pack(side='left')
@@ -95,6 +108,64 @@ class App(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.close)
         self.after(300, self.tick)
 
+    def profile(self):
+        from engine import cloud_path
+        return validate_profile({'destination': self.dest.get().strip(),
+                                 'roots': [cloud_path(p) for p in self.roots.get('1.0', 'end').splitlines() if p.strip()],
+                                 'interval': float(self.interval.get()), 'retries': int(self.retries.get()), 'backoff': float(self.backoff.get())})
+
+    def toggle_agent(self):
+        try:
+            if self.closing or self.active() and self.agent_enabled.get():
+                raise ControlError('Сначала остановите текущую операцию.')
+            self.channel.approve(self.agent_session, self.profile() if self.agent_enabled.get() else None)
+            self.status.set('MCP разрешён для текущего профиля.' if self.agent_enabled.get() else 'MCP отключён; новые команды запрещены.')
+        except (ValueError, OSError):
+            self.agent_enabled.set(False)
+            self.channel.approve(self.agent_session)
+            messagebox.showerror('MCP', 'Не удалось разрешить MCP. Остановите работу и проверьте пути/параметры.')
+
+    def phase(self):
+        if self.closing:
+            return 'stopping' if self.active() else 'closed'
+        if not self.active():
+            return 'idle'
+        if self.engine.stop.is_set():
+            return 'stopping'
+        if self.engine.paused.is_set():
+            return 'paused'
+        return 'pause_requested' if self.engine.pause.is_set() else 'running'
+
+    def handle_agent(self, command, profile):
+        if self.closing or self.profile() != profile:
+            raise ControlError('approved_profile_changed')
+        if command in ('start', 'scan'):
+            if self.active():
+                return {'outcome': 'already_active'}
+            return {'outcome': 'started' if self.start(command == 'scan', agent=True) else 'not_started_check_gui'}
+        if command == 'pause':
+            if self.active():
+                self.engine.pause.set()
+            return {'outcome': 'pause_requested' if self.active() else 'already_idle'}
+        if command == 'resume':
+            if self.active():
+                self.engine.pause.clear()
+            return {'outcome': 'resume_requested' if self.active() else 'idle_use_start'}
+        if command == 'stop':
+            self.stop()
+            return {'outcome': 'stop_requested' if self.active() else 'already_idle'}
+        if self.active():
+            return {'outcome': 'busy_stop_or_wait_first'}
+        if command == 'retry':
+            self.store.retry(profile['roots'])
+        elif command == 'rescan':
+            self.store.rescan(profile['roots'])
+        elif command == 'export':
+            exported = self.store.export(safe_local(self.store.directory, 'agent-exports'), roots=profile['roots'])
+            return {'outcome': 'exported', 'directory': str(exported)}
+        self.dirty = True
+        return {'outcome': 'applied_no_download_started'}
+
     def active(self):
         return self.worker and self.worker.is_alive()
 
@@ -104,7 +175,7 @@ class App(tk.Tk):
             self.dest.set(value)
 
     def set_roots(self, text):
-        if not self.active():
+        if not self.active() and not self.agent_enabled.get():
             self.roots.delete('1.0', 'end'); self.roots.insert('1.0', text)
 
     def auth_help(self):
@@ -117,6 +188,14 @@ class App(tk.Tk):
         self.token.set(''); self.remember.set(False)
         (self.store.directory / 'oauth.dpapi').unlink(missing_ok=True)
 
+    def paste_token(self):
+        if self.active():
+            return
+        self.token_entry.focus_set()
+        self.token_entry.selection_range(0, 'end')
+        # The widget handles the clipboard locally; never log or persist its value.
+        self.token_entry.event_generate('<<Paste>>')
+
     def report(self, text):
         try:
             self.messages.put_nowait(text)
@@ -127,7 +206,7 @@ class App(tk.Tk):
                 pass
             self.messages.put_nowait(text)
 
-    def start(self, scan_only=False):
+    def start(self, scan_only=False, agent=False):
         if self.active():
             if self.engine.pause.is_set():
                 self.engine.pause.clear(); self.pause_button.configure(text='Пауза')
@@ -151,8 +230,13 @@ class App(tk.Tk):
             self.worker = threading.Thread(target=engine.run, args=(destination, roots, scan_only), daemon=False)
             self.worker.start()
             self.status.set('Проверка аккаунта…')
+            return True
         except Exception as exc:
-            messagebox.showerror('Не удалось начать', str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Локальная ошибка настройки.')
+            if agent:
+                self.status.set('MCP: запуск не выполнен; проверьте токен и настройки в окне.')
+            else:
+                messagebox.showerror('Не удалось начать', str(exc) if isinstance(exc, (ValueError, RuntimeError)) else 'Локальная ошибка настройки.')
+            return False
 
     def pause(self):
         if self.active():
@@ -194,6 +278,12 @@ class App(tk.Tk):
             self.table.insert('', 'end', values=(row['path'], row['status'], row.get('size', ''), row.get('reason') or row.get('error') or ''))
 
     def tick(self):
+        try:
+            self.channel.publish(self.agent_session, self.phase(), bool(self.token.get()))
+            if self.agent_enabled.get() and not self.closing:
+                self.channel.dispatch_one(self.agent_session, self.handle_agent)
+        except (ControlError, OSError):
+            pass
         updated = False
         while True:
             try:
@@ -201,9 +291,15 @@ class App(tk.Tk):
             except queue.Empty:
                 break
         enabled = not self.active()
-        for widget in (self.scan_button, self.retry_button, self.rescan_button, self.dest_button, self.dest_entry, self.token_entry):
+        for widget in (self.scan_button, self.retry_button, self.rescan_button, self.token_entry, self.paste_button):
             widget.configure(state='normal' if enabled else 'disabled')
-        self.roots.configure(state='normal' if enabled else 'disabled')
+        scope_enabled = enabled and not self.agent_enabled.get()
+        self.dest_button.configure(state='normal' if scope_enabled else 'disabled')
+        self.dest_entry.configure(state='normal' if scope_enabled else 'disabled')
+        self.roots.configure(state='normal' if scope_enabled else 'disabled')
+        for entry in self.option_entries:
+            entry.configure(state='normal' if scope_enabled else 'disabled')
+        self.agent_check.configure(state='disabled' if self.closing else 'normal')
         try:
             count, total_bytes, done, done_bytes = self.store.summary()
             self.stats.set(f'Проверено файлов: {done} / {count}    Байт: {done_bytes:,} / {total_bytes:,}    Не решено: {count - done}')
@@ -217,22 +313,40 @@ class App(tk.Tk):
         self.after(1000, self.tick)
 
     def close(self):
+        if not self.closing:
+            self.closing = True
+            self.agent_enabled.set(False)
+            self.channel.approve(self.agent_session)
         if self.active():
             self.stop()
             self.after(200, self.close)
         else:
+            self.channel.publish(self.agent_session, 'closed', False)
             self.destroy()
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--state', type=Path, default=APP_ROOT / 'state', help='Separate durable queue directory')
+    parser.add_argument('--state', type=Path, help='Separate durable queue directory; mandatory for MCP')
+    parser.add_argument('--mcp', action='store_true', help='Run only stdio agent control; never starts a download worker')
     parser.add_argument('--ui-smoke', action='store_true', help='Open empty UI briefly, without cloud access')
     args = parser.parse_args()
-    app = App(args.state)
-    if args.ui_smoke:
-        app.after(2000, app.destroy)
-    app.mainloop()
+    if args.mcp:
+        if not args.state:
+            parser.error('--mcp requires explicit --state')
+        from mcp_server import serve
+        serve(Store(args.state))
+        return
+    state = args.state or APP_ROOT / 'state'
+    channel = Channel(Store(state))
+    try:
+        with channel.gui_lease():
+            app = App(state, channel)
+            if args.ui_smoke:
+                app.after(2000, app.close)
+            app.mainloop()
+    except ControlError:
+        messagebox.showerror('Очередь занята', 'Другое окно уже управляет этой очередью.')
 
 
 if __name__ == '__main__':

@@ -8,7 +8,7 @@ import shutil
 import sys
 import zipfile
 
-VERSION = '0.1.0'
+VERSION = '0.2.0'
 
 
 def main():
@@ -30,12 +30,14 @@ def main():
         if not path.is_file():
             raise RuntimeError('Required redistribution notice missing: ' + name)
         shutil.copyfile(path, licenses / name)
-    members = ['YandexDiskRescue.exe', 'README.md', 'LICENSE', 'THIRD_PARTY.md', 'PUBLIC_REVIEW.md']
-    for name in members[1:]:
+    members = ['YandexDiskRescue.exe', 'YandexDiskRescueMCP.exe', 'README.md', 'LICENSE', 'THIRD_PARTY.md', 'PUBLIC_REVIEW.md', 'MCP.md', 'LIVE_VALIDATION.md']
+    for name in members[2:]:
         shutil.copyfile(app / name, target / name)
     exe = target / members[0]
     manifest = {'version': VERSION, 'stage': 'prerelease', 'live_api_validated': False,
                 'executable': {'name': exe.name, 'bytes': exe.stat().st_size, 'sha256': hashlib.sha256(exe.read_bytes()).hexdigest()}}
+    mcp = target / 'YandexDiskRescueMCP.exe'
+    manifest['mcp_executable'] = {'name': mcp.name, 'bytes': mcp.stat().st_size, 'sha256': hashlib.sha256(mcp.read_bytes()).hexdigest()}
     (target / 'release-manifest.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
     members += ['release-manifest.json'] + ['licenses/' + name for name in sources]
     archive = target / ('YandexDiskRescue-' + VERSION + '-win-x64.zip')

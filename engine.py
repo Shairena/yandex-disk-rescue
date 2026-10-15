@@ -20,6 +20,17 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
+def scope_filter(roots):
+    if roots is None:
+        return '1', []
+    parts, args = [], []
+    for root in roots:
+        prefix = cloud_path(root).rstrip('/') + '/'
+        parts.append('(path=? OR substr(path,1,?)=?)')
+        args.extend([cloud_path(root), len(prefix), prefix])
+    return '(' + ' OR '.join(parts) + ')' if parts else '0', args
+
+
 def cloud_path(value):
     value = value.strip()
     if value == '/disk' or value.startswith('/disk/'):
@@ -197,30 +208,33 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=exclu
         with self.db() as db:
             return [dict(r) for r in db.execute('SELECT * FROM folders ORDER BY path')]
 
-    def retry(self):
+    def retry(self, roots=None):
+        scope, args = scope_filter(roots)
         with self.db() as db:
-            db.execute("UPDATE entries SET status='pending',cycle_attempts=0,next_attempt=0 WHERE kind='file' AND status NOT IN ('downloaded','excluded_security')")
-            db.execute("UPDATE folders SET status='pending',attempts=0,error=NULL WHERE status='error'")
+            db.execute("UPDATE entries SET status='pending',cycle_attempts=0,next_attempt=0 WHERE kind='file' AND status NOT IN ('downloaded','excluded_security') AND " + scope, args)
+            db.execute("UPDATE folders SET status='pending',attempts=0,error=NULL WHERE status='error' AND " + scope, args)
             db.execute("INSERT INTO history(recorded,event) VALUES (?, 'explicit_retry_cycle')", (now(),))
 
-    def rescan(self):
+    def rescan(self, roots=None):
+        scope, args = scope_filter(roots)
         with self.db() as db:
-            db.execute("UPDATE folders SET offset=0,total=NULL,status='pending',attempts=0,error=NULL")
-            db.execute('DELETE FROM folder_items')
+            db.execute("UPDATE folders SET offset=0,total=NULL,status='pending',attempts=0,error=NULL WHERE " + scope, args)
+            db.execute('DELETE FROM folder_items WHERE folder IN (SELECT path FROM folders WHERE ' + scope + ')', args)
             db.execute("INSERT INTO history(recorded,event) VALUES (?, 'explicit_rescan_no_deletions')", (now(),))
 
-    def export(self, directory):
+    def export(self, directory, roots=None):
+        scope, args = scope_filter(roots)
         # A fresh subdirectory preserves pre-existing recovery evidence/exports.
         directory = Path(directory) / ('YandexRescue-export-' + datetime.now().strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
         directory.mkdir(parents=True, exist_ok=False)
         with self.db() as db:
             tables = {
-                'inventory.csv': ('SELECT * FROM entries ORDER BY path', ()),
-                'downloaded.csv': ("SELECT * FROM entries WHERE status='downloaded' ORDER BY path", ()),
+                'inventory.csv': ('SELECT * FROM entries WHERE ' + scope + ' ORDER BY path', args),
+                'downloaded.csv': ("SELECT * FROM entries WHERE status='downloaded' AND " + scope + ' ORDER BY path', args),
                 # All unresolved, including never attempted: no silent disappearance.
-                'unresolved.csv': ("SELECT * FROM entries WHERE kind='file' AND status!='downloaded' ORDER BY path", ()),
-                'inventory_errors.csv': ("SELECT * FROM folders WHERE status!='complete' ORDER BY path", ()),
-                'attempt_history.csv': ('SELECT * FROM attempts ORDER BY id', ()),
+                'unresolved.csv': ("SELECT * FROM entries WHERE kind='file' AND status!='downloaded' AND " + scope + ' ORDER BY path', args),
+                'inventory_errors.csv': ("SELECT * FROM folders WHERE status!='complete' AND " + scope + ' ORDER BY path', args),
+                'attempt_history.csv': ('SELECT * FROM attempts WHERE ' + scope + ' ORDER BY id', args),
                 'run_status.csv': ("SELECT key,value FROM settings WHERE key IN ('roots','last_run_status','last_run_error')", ()),
             }
             for name, (sql, parameters) in tables.items():
@@ -230,6 +244,8 @@ VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET resource_id=exclu
                     writer = csv.writer(stream)
                     writer.writerow([d[0] for d in cursor.description])
                     for row in cursor:
+                        if name == 'run_status.csv' and roots is not None and row[0] == 'roots':
+                            row = ('roots', '\n'.join(roots))
                         # Prevent spreadsheet formula execution from untrusted names.
                         writer.writerow(["'" + v if isinstance(v, str) and v.startswith(('=', '+', '-', '@', '\t', '\r')) else v for v in row])
                 os.replace(temp, directory / name)
@@ -249,13 +265,16 @@ class Engine:
         self.notify = notify or (lambda _: None)
         self.stop = threading.Event()
         self.pause = threading.Event()
+        self.paused = threading.Event()
 
     def check(self):
         if self.stop.is_set():
             raise Interrupted()
         while self.pause.is_set():
+            self.paused.set()
             if self.stop.wait(.2):
                 raise Interrupted()
+        self.paused.clear()
 
     def wait(self, seconds):
         until = time.monotonic() + seconds
@@ -286,24 +305,32 @@ class Engine:
             handle.close()
 
     def run(self, destination, roots, scan_only=False):
+        # Do not mutate another worker's queue/status if the lease is unavailable.
         try:
             with self.lease():
-                self.roots = [cloud_path(r) for r in roots]
-                self.store.setting('roots', '\n'.join(self.roots))
-                self.store.setting('last_run_status', 'in_progress')
-                self.store.setting('last_run_error', '')
-                self.store.configure(destination, self.api.identity())
-                self.store.seed(roots)
-                with self.store.db() as db:
-                    # Abandoned work remains unresolved; partials are retained.
-                    db.execute("UPDATE entries SET status='pending',reason='interrupted_restart' WHERE status='downloading'")
-                    db.execute("UPDATE attempts SET finished=?,status='interrupted',reason='process_restart' WHERE finished IS NULL", (now(),))
-                self.scan()
-                if not scan_only:
-                    self.prepare_local()
-                    self.download_all()
-                self.store.setting('last_run_status', 'finished_with_unresolved_items' if self.store.rows('pending') or any(f['status'] != 'complete' for f in self.store.folders()) else 'finished')
-                self.notify('Операция завершена. Проверьте незавершённые папки и файлы.')
+                self._run_owned(destination, roots, scan_only)
+        except ValueError:
+            self.notify('Очередь занята другим исполнителем; запуск не выполнен.')
+
+    def _run_owned(self, destination, roots, scan_only=False):
+        try:
+            self.roots = [cloud_path(r) for r in roots]
+            self.store.setting('roots', '\n'.join(self.roots))
+            self.store.setting('last_run_status', 'in_progress')
+            self.store.setting('last_run_error', '')
+            self.store.configure(destination, self.api.identity())
+            self.store.seed(roots)
+            scope, scope_args = scope_filter(self.roots)
+            with self.store.db() as db:
+                # Abandoned work remains unresolved; partials are retained.
+                db.execute("UPDATE entries SET status='pending',reason='interrupted_restart' WHERE status='downloading' AND " + scope, scope_args)
+                db.execute("UPDATE attempts SET finished=?,status='interrupted',reason='process_restart' WHERE finished IS NULL AND " + scope, (now(), *scope_args))
+            self.scan()
+            if not scan_only:
+                self.prepare_local()
+                self.download_all()
+            self.store.setting('last_run_status', 'finished_with_unresolved_items' if self.store.rows('pending') or any(f['status'] != 'complete' for f in self.store.folders()) else 'finished')
+            self.notify('Операция завершена. Проверьте незавершённые папки и файлы.')
         except Interrupted:
             self.store.setting('last_run_status', 'interrupted')
             self.notify('Остановлено. Очередь сохранена; частичные файлы не считаются готовыми.')

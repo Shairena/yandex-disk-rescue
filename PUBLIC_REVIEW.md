@@ -1,4 +1,20 @@
-# Pre-release verification: 0.1.0
+# Pre-release verification: 0.2.0
+
+Local MCP follow-up: independent dedicated control suite **14 passed, 1
+skipped**; full offline app suite **28 passed, 0 failed, 2 skipped**. Both skips
+require unavailable Windows symlink privileges. Actual subprocess protocol,
+initialization/version negotiation, 11-tool discovery, closed/disabled GUI
+denial, scoped inventory/reset/exports, idempotency/concurrent producers,
+revocation/restart/heartbeat, error non-disclosure and pause checkpoint passed.
+Single-worker command behavior was checked using a synthetic handler.
+
+Rebuilt 0.2.0 console MCP passed isolated initialize/tools/list/get_status
+(GUI closed, app_not_running), exit 0/empty stderr. Rebuilt GUI --ui-smoke
+passed. No real GUI consent/worker/account or live MCP download was exercised.
+The prior one-file authenticated result below applies to 0.1.0, not a new live
+acceptance claim for 0.2.0. MCP is not automatically installed into any client.
+
+## Prior engine and live validation
 
 2026-10-15. Independent synthetic review: **14 passed, 0 failed, 1 skipped**.
 The skipped Windows reparse-point test required unavailable symlink privileges;
