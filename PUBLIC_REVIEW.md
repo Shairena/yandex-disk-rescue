@@ -1,0 +1,32 @@
+# Pre-release verification: 0.1.0
+
+2026-10-15. Independent synthetic review: **14 passed, 0 failed, 1 skipped**.
+The skipped Windows reparse-point test required unavailable symlink privileges;
+that runtime path remains unverified on this test host.
+
+Verified offline scope: recursive pages and empty directories, incomplete scan
+evidence, partial download interruption/restart, cloud hash verification,
+existing-copy adoption/no-overwrite conflicts, lock contention, account and
+destination binding, read-only API/host restrictions, auth/429 mapping,
+retry history, CSV completeness/formula escaping, case collisions and synthetic
+Windows DPAPI roundtrip.
+
+An independent probe found that changed cloud versions inherited exhausted
+retry budgets. The fix resets only the new version's current retry/evidence
+fields, retaining lifetime attempts/history and existing files. Independent
+recheck passed; unchanged metadata preserves its current budget.
+
+The freshly packaged Windows EXE passed `--ui-smoke --state` in a new isolated
+directory: exit 0, only an empty queue database created, no network/cloud access.
+This is startup verification, not visual/DPI acceptance.
+
+**Not validated:** authenticated Yandex API/downloads, HTTP 410 behavior for a
+real account, any complete real Disk backup, or media playability. Users obtain
+their own read-only OAuth credentials through Yandex and enter them locally.
+An error, exhausted retries, or partial inventory must not be treated as proof
+of permanent file loss or backup completeness.
+
+The release is an explicitly experimental prerelease. No credentials, personal
+files, recovery inventories, private project history, or live-account logs are
+included. The original application/tests are MIT; bundled runtime licenses
+remain separate and are included in the portable archive.

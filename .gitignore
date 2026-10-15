@@ -1,0 +1,12 @@
+__pycache__/
+build/
+dist/
+*.spec
+state/
+review_artifacts/
+.buildenv/
+*.dpapi
+*.sqlite3*
+*.part
+*.csv
+
