@@ -20,8 +20,14 @@ The freshly packaged Windows EXE passed `--ui-smoke --state` in a new isolated
 directory: exit 0, only an empty queue database created, no network/cloud access.
 This is startup verification, not visual/DPI acceptance.
 
-**Not validated:** authenticated Yandex API/downloads, HTTP 410 behavior for a
-real account, any complete real Disk backup, or media playability. Users obtain
+**Live follow-up:** the public 0.1.0 EXE successfully downloaded one real file
+(4,042,624 bytes) through authenticated REST. Independent local evidence review
+confirmed cloud SHA256, MD5 and recorded local SHA256 agreement, one completed
+attempt and no error. Credentials were entered by the human and never read by
+the reviewers. No private filename, account ID or payload is published.
+
+**Not validated:** live full-tree pagination/backup, HTTP 410 resolution across
+accounts/files, any complete real Disk backup, or media playability. Users obtain
 their own read-only OAuth credentials through Yandex and enter them locally.
 An error, exhausted retries, or partial inventory must not be treated as proof
 of permanent file loss or backup completeness.

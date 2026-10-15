@@ -6,8 +6,9 @@ SQLite queue, verifies size and a cloud-provided SHA256/MD5 hash, and exports
 unresolved files and incomplete folder scans. It never deletes cloud or local
 files and never silently overwrites conflicting files.
 
-**Status: pre-release. Independently tested with synthetic data; authenticated
-live operation has not yet been validated.** An HTTP 410 or exhausted retries is not evidence that a
+**Status: pre-release. Independently tested with synthetic data and one real
+authenticated file download (4,042,624 bytes, cloud SHA256/MD5 verified).** Full
+live recursive backup and every-file availability remain unverified. An HTTP 410 or exhausted retries is not evidence that a
 file is permanently lost. This project is not affiliated with Yandex.
 
 ## Run
