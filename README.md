@@ -71,6 +71,14 @@ working are unverified for your account; this app does not promise a workaround.
 
 ## Use
 
+Interval, attempts per cycle, backoff and the queue view filter are saved
+automatically in the selected queue's SQLite settings, without starting a
+transfer. Valid numeric edits survive restart; invalid/nonfinite/out-of-range
+text keeps the last valid saved value. Older queues use defaults (3/3/5).
+Agent-control permission still resets to off at each GUI restart. Destination,
+cloud roots, queue progress and optional Windows-protected token retain their
+existing persistence rules; no token is saved merely by editing preferences.
+
 **Refreshing after cloud changes:** read [REFRESH.md](REFRESH.md) before upgrading
 an existing recovery queue. Version 0.2.1 fixes old deleted/moved folders being
 scheduled again from historical inventory. Rows/local copies are preserved;

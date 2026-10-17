@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 import queue
+import math
 import sys
 import threading
 import tkinter as tk
@@ -31,12 +32,14 @@ class App(tk.Tk):
         self.dest = tk.StringVar(value=self.store.setting('destination') or r'I:\YandexBackup\Disk')
         self.token = tk.StringVar()
         self.remember = tk.BooleanVar()
-        self.interval = tk.StringVar(value='3')
-        self.retries = tk.StringVar(value='3')
-        self.backoff = tk.StringVar(value='5')
+        self.interval = tk.StringVar(value=self.saved_number('interval', '3', 0, 3600))
+        self.retries = tk.StringVar(value=self.saved_number('retries', '3', 1, 20, integer=True))
+        self.backoff = tk.StringVar(value=self.saved_number('backoff', '5', 1, 3600))
         self.status = tk.StringVar(value='Для работы нужен OAuth-токен с правом чтения всего Диска.')
         self.stats = tk.StringVar()
-        self.view = tk.StringVar(value='Ожидают')
+        views = ('Ожидают', 'Сохранены', 'Проблемы', 'Вся опись', 'Папки / ошибки описи')
+        saved_view = self.store.setting('ui_view')
+        self.view = tk.StringVar(value=saved_view if saved_view in views else views[0])
         self.summary = tk.StringVar()
         self.folder_rows = []
         self.dirty = True
@@ -106,7 +109,34 @@ class App(tk.Tk):
         ttk.Label(outer, text='Состояние очереди: ' + str(self.store.directory), wraplength=980).pack(anchor='w')
         ttk.Label(outer, text='Активные вложения (.lnk, .exe и другие) исключаются и остаются в отчёте. Частичные файлы сохраняются отдельно.').pack(anchor='w')
         self.protocol('WM_DELETE_WINDOW', self.close)
+        for variable in (self.interval, self.retries, self.backoff, self.view):
+            variable.trace_add('write', self.save_preferences)
         self.after(300, self.tick)
+
+    @staticmethod
+    def valid_number(value, low, high, integer=False):
+        try:
+            number = int(value) if integer else float(value)
+            return math.isfinite(number) and low <= number <= high
+        except (ValueError, TypeError, OverflowError):
+            return False
+
+    def saved_number(self, name, default, low, high, integer=False):
+        value = self.store.setting('ui_' + name)
+        return value if self.valid_number(value, low, high, integer) else default
+
+    def save_preferences(self, *_):
+        try:
+            for name, variable, low, high, integer in (
+                    ('interval', self.interval, 0, 3600, False),
+                    ('retries', self.retries, 1, 20, True),
+                    ('backoff', self.backoff, 1, 3600, False)):
+                value = variable.get()
+                if self.valid_number(value, low, high, integer):
+                    self.store.setting('ui_' + name, value)
+            self.store.setting('ui_view', self.view.get())
+        except Exception:
+            self.status.set('Не удалось сохранить настройки. Проверьте доступ к каталогу состояния.')
 
     def profile(self):
         from engine import cloud_path
