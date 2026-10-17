@@ -27,7 +27,7 @@ executable. Put it on a private local disk, not a synced/shared directory.
 One state directory binds permanently to one account and destination; use a
 different `--state` directory to change either. Only one worker may use a queue.
 
-## Agent control (0.2.0)
+## Agent control
 
 The release also includes `YandexDiskRescueMCP.exe`: a local stdio MCP adapter
 to the open GUI's existing worker. [MCP.md](MCP.md) provides the exact client
