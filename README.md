@@ -33,7 +33,8 @@ The release also includes `YandexDiskRescueMCP.exe`: a local stdio MCP adapter
 to the open GUI's existing worker. [MCP.md](MCP.md) provides the exact client
 configuration, tool contract and setup. Enter credentials in the GUI and enable
 agent control for the approved destination/roots/options; agents never receive
-the token or a tool to change that scope. Restart resets this permission to off.
+the token or a tool to change that scope. The checkbox remembers exact-profile
+approval across restarts; unchecking it revokes that saved permission.
 The GUI includes an explicit **Вставить** token button; Shift+Insert also works.
 
 MCP can read scoped queue/progress, request start/scan/pause/resume/stop,
@@ -75,7 +76,11 @@ Interval, attempts per cycle, backoff and the queue view filter are saved
 automatically in the selected queue's SQLite settings, without starting a
 transfer. Valid numeric edits survive restart; invalid/nonfinite/out-of-range
 text keeps the last valid saved value. Older queues use defaults (3/3/5).
-Agent-control permission still resets to off at each GUI restart. Destination,
+The MCP checkbox remembers approval for the exact profile/account binding.
+It restores into a fresh session only if the profile still matches and the
+saved Windows-protected token loads. Uncheck it or use Forget to revoke saved
+approval. Legacy queues without saved approval stay off. Approval restoration
+does not start a transfer or replay old commands. Destination,
 cloud roots, queue progress and optional Windows-protected token retain their
 existing persistence rules; no token is saved merely by editing preferences.
 

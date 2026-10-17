@@ -61,12 +61,16 @@ CREATE TABLE IF NOT EXISTS agent_commands(request_id TEXT PRIMARY KEY, session T
             db.execute('UPDATE agent_session SET heartbeat=?,phase=?,credential_present=? WHERE session=?',
                        (time.time(), phase, int(credential_present), session))
 
-    def approve(self, session, profile=None):
+    def approve(self, session, profile=None, remember=False):
         if profile is not None:
             profile = validate_profile(profile)
         with self.store.db() as db:
             db.execute('UPDATE agent_session SET enabled=?,profile=? WHERE session=?',
                        (int(profile is not None), json.dumps(profile) if profile else None, session))
+            if remember:
+                account = db.execute("SELECT value FROM settings WHERE key='account'").fetchone()
+                consent = json.dumps({'profile': profile, 'account': account[0] if account else None}) if profile else ''
+                db.execute('INSERT OR REPLACE INTO settings VALUES (?,?)', ('ui_mcp_consent', consent))
             # Revocation/reapproval invalidates every command not yet claimed.
             db.execute("UPDATE agent_commands SET status='cancelled',updated=? WHERE session=? AND status='queued'", (time.time(), session))
 

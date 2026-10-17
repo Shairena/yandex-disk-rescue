@@ -69,7 +69,7 @@ def serve(store):
                 version = request.get('params', {}).get('protocolVersion')
                 version = version if version in ('2024-11-05', '2025-03-26', '2025-06-18') else '2024-11-05'
                 initialized = True
-                result = {'protocolVersion': version, 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'yandex-disk-rescue', 'version': '0.2.1'},
+                result = {'protocolVersion': version, 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'yandex-disk-rescue', 'version': '0.2.3'},
                           'instructions': 'Local GUI must be open with explicitly approved profile. Credentials stay in GUI. Mutation ACK is queued; poll get_command then status. No download worker lives in this MCP process. Reuse request_id for retry, never replay ambiguous outcomes.'}
             elif method == 'ping':
                 result = {}

@@ -1,4 +1,4 @@
-# Local MCP agent controls (0.2.1)
+# Local MCP agent controls (0.2.3)
 
 Refresh correction: [REFRESH.md](REFRESH.md) explains current versus historical
 membership, additive schema migration and exclusive cutover. `rescan` now gates
@@ -45,7 +45,14 @@ until your client lists the tools and a harmless `get_status` call succeeds.
 
 Unchecking consent cancels unclaimed commands and prevents new agent commands;
 it does not stop an already running download. Use the GUI Stop button for that.
-On every GUI restart consent defaults **off**, even when a credential was saved.
+The checkbox now saves consent for the exact validated profile and queue account
+binding. After restart the GUI opens a new session (old queued commands become
+stale; executing commands become ambiguous) and restores permission only if the
+profile/binding still match and the saved DPAPI token loads. This does not start
+downloads. Existing queues without saved consent remain off until checked once.
+Unchecking it, or using Forget while idle, revokes saved permission. A changed
+profile/account or unavailable token leaves permission off. If consent preceded
+the first account binding, reapprove after that binding is established.
 
 ## Tools
 

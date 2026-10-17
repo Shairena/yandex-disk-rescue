@@ -3,6 +3,7 @@ import argparse
 from pathlib import Path
 import queue
 import math
+import json
 import sys
 import threading
 import tkinter as tk
@@ -72,7 +73,7 @@ class App(tk.Tk):
         ttk.Button(presets, text='Весь Диск', command=lambda: self.set_roots('disk:/')).pack(side='left')
         ttk.Button(presets, text='Фото, загрузки, фотокамера', command=lambda: self.set_roots('disk:/Старые фото и видео\ndisk:/Загрузки\ndisk:/Фотокамера')).pack(side='left', padx=6)
         ttk.Label(presets, text='Можно указать любую папку или файл.').pack(side='left')
-        self.agent_check = ttk.Checkbutton(outer, text='Разрешить агенту MCP управление этим профилем (папка, пути и параметры фиксируются)',
+        self.agent_check = ttk.Checkbutton(outer, text='Разрешить и запомнить управление MCP этим профилем после перезапуска',
                                           variable=self.agent_enabled, command=self.toggle_agent)
         self.agent_check.pack(anchor='w', pady=(6, 0))
         opts = ttk.Frame(outer); opts.pack(fill='x', pady=8)
@@ -111,7 +112,29 @@ class App(tk.Tk):
         self.protocol('WM_DELETE_WINDOW', self.close)
         for variable in (self.interval, self.retries, self.backoff, self.view):
             variable.trace_add('write', self.save_preferences)
+        self.restore_agent_permission()
         self.after(300, self.tick)
+
+    def restore_agent_permission(self):
+        saved = self.store.setting('ui_mcp_consent')
+        if not saved:
+            return
+        try:
+            consent = json.loads(saved)
+            if not isinstance(consent, dict) or set(consent) != {'profile', 'account'}:
+                raise ValueError('invalid_saved_consent')
+            profile = validate_profile(consent['profile'])
+            if (profile != self.profile() or consent['account'] != self.store.setting('account')
+                    or not self.token.get()):
+                self.status.set('MCP не восстановлен: профиль, аккаунт или сохранённый токен изменились.')
+                return
+            self.channel.approve(self.agent_session, profile)
+            self.agent_enabled.set(True)
+            self.status.set('Сохранённое разрешение MCP восстановлено. Скачивание ещё не запущено.')
+        except Exception:
+            self.agent_enabled.set(False)
+            self.channel.approve(self.agent_session)
+            self.status.set('Не удалось восстановить разрешение MCP. Включите его заново в окне.')
 
     @staticmethod
     def valid_number(value, low, high, integer=False):
@@ -148,11 +171,11 @@ class App(tk.Tk):
         try:
             if self.closing or self.active() and self.agent_enabled.get():
                 raise ControlError('Сначала остановите текущую операцию.')
-            self.channel.approve(self.agent_session, self.profile() if self.agent_enabled.get() else None)
-            self.status.set('MCP разрешён для текущего профиля.' if self.agent_enabled.get() else 'MCP отключён; новые команды запрещены.')
+            self.channel.approve(self.agent_session, self.profile() if self.agent_enabled.get() else None, remember=True)
+            self.status.set('Разрешение MCP сохранено для текущего профиля.' if self.agent_enabled.get() else 'MCP отключён; сохранённое разрешение удалено.')
         except (ValueError, OSError):
             self.agent_enabled.set(False)
-            self.channel.approve(self.agent_session)
+            self.channel.approve(self.agent_session, remember=True)
             messagebox.showerror('MCP', 'Не удалось разрешить MCP. Остановите работу и проверьте пути/параметры.')
 
     def phase(self):
@@ -215,6 +238,8 @@ class App(tk.Tk):
     def forget(self):
         if self.active():
             return
+        self.channel.approve(self.agent_session, remember=True)
+        self.agent_enabled.set(False)
         self.token.set(''); self.remember.set(False)
         (self.store.directory / 'oauth.dpapi').unlink(missing_ok=True)
 
