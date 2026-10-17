@@ -124,7 +124,7 @@ class App(tk.Tk):
             if not isinstance(consent, dict) or set(consent) != {'profile', 'account'}:
                 raise ValueError('invalid_saved_consent')
             profile = validate_profile(consent['profile'])
-            if (profile != self.profile() or consent['account'] != self.store.setting('account')
+            if (not consent['account'] or profile != self.profile() or consent['account'] != self.store.setting('account')
                     or not self.token.get()):
                 self.status.set('MCP не восстановлен: профиль, аккаунт или сохранённый токен изменились.')
                 return

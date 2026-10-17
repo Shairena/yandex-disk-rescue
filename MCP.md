@@ -51,8 +51,9 @@ stale; executing commands become ambiguous) and restores permission only if the
 profile/binding still match and the saved DPAPI token loads. This does not start
 downloads. Existing queues without saved consent remain off until checked once.
 Unchecking it, or using Forget while idle, revokes saved permission. A changed
-profile/account or unavailable token leaves permission off. If consent preceded
-the first account binding, reapprove after that binding is established.
+profile/account, missing account binding or unavailable token leaves permission
+off. If consent preceded the first account binding, reapprove after that binding
+is established.
 
 ## Tools
 
